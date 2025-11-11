@@ -9,9 +9,10 @@ This repository will save your current monitor positioning and then re-create th
 **Requirements**
 - Pop-OS Cosmic DE (to run the project)
 - rust + cargo toolchain installed (to build the project)
+- libudev-dev installed (for building with support for auto-detecting monitors)
 
 1. Clone the repo
-2. Run `./install.sh`
+2. Run `./install.sh` (or `./install.sh --no-autodetect` to not support monitor autodetect)
 
 This will build the project and install a user-level systemctl file that runs on login to keep our idle-monitor alive. This idle monitor will detect idle or screen changes and then try to re-position them according to your saved configuration. It will also install the cosmic-monitor-hack binary in ~/.local/bin
 

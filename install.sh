@@ -28,7 +28,11 @@ if [ "$1" = "--uninstall" ]; then
 fi
 
 echo "Building cosmic-monitor-hack..."
-cargo build --release
+if [ "$1" = "--no-autodetect" ]; then
+    cargo build --release --no-default-features
+else
+    cargo build --release
+fi
 
 echo "Stopping existing service if it exists..."
 systemctl --user stop cosmic-monitor-hack.service || true

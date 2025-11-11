@@ -15,5 +15,13 @@ clap = { version = "4.5", features = ["derive"] }
 cosmic-randr = { git = "https://github.com/pop-os/cosmic-randr" }
 cosmic-randr-shell = { git = "https://github.com/pop-os/cosmic-randr" }
 tachyonix = "0.3"
-inotify = { version = "0.11", default-features = false }
-tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["signal", "sync", "time", "rt-multi-thread", "macros"] }
+
+[features]
+# Udev hotplug support (requires libudev-dev to be installed)
+default = ["autodetect"]
+autodetect = ["udev"]
+
+[dependencies.udev]
+version = "0.9"
+optional = true

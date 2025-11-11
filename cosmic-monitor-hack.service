@@ -7,7 +7,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/cosmic-monitor-hack monitor
-Restart=on-failure
+Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
 
