@@ -98,9 +98,47 @@ fn position_monitors() {
             }
         };
 
+        // Parse the KDL document
+        let document = match outputs_str.parse::<kdl::KdlDocument>() {
+            Ok(doc) => doc,
+            Err(err) => {
+                eprintln!("Failed to parse KDL document: {}", err);
+                std::thread::sleep(MONITOR_DETECTION_INTERVAL);
+                continue;
+            }
+        };
+
         // Check if both monitors are connected and enabled
-        let has_hdmi = outputs_str.contains("output \"HDMI-A-1\" enabled=#true");
-        let has_dp = outputs_str.contains("output \"DP-1\" enabled=#true");
+        let mut has_hdmi = false;
+        let mut has_dp = false;
+
+        for node in document.nodes() {
+            // Each root node should be an "output" node
+            if node.name().value() != "output" {
+                continue;
+            }
+
+            // First entry is the output name (unnamed)
+            let output_name = node.entries().first().and_then(|e| e.value().as_string());
+
+            // Check if this is one of our target monitors
+            if let Some(name) = output_name {
+                // Look for the enabled attribute
+                let is_enabled = node
+                    .entries()
+                    .iter()
+                    .skip(1) // Skip the first entry (output name)
+                    .find(|e| e.name().map(|n| n.value()) == Some("enabled"))
+                    .and_then(|e| e.value().as_bool())
+                    .unwrap_or(false);
+
+                if name == "HDMI-A-1" && is_enabled {
+                    has_hdmi = true;
+                } else if name == "DP-1" && is_enabled {
+                    has_dp = true;
+                }
+            }
+        }
 
         if has_hdmi && has_dp {
             println!("Both monitors detected. Applying configuration...");
