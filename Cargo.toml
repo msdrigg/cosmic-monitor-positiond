@@ -12,14 +12,8 @@ log = "0.4.22"
 env_logger = "0.11.5"
 kdl = "6.5.0"
 clap = { version = "4.5", features = ["derive"] }
+cosmic-randr = { git = "https://github.com/pop-os/cosmic-randr" }
 cosmic-randr-shell = { git = "https://github.com/pop-os/cosmic-randr" }
+tachyonix = "0.3"
 inotify = { version = "0.11", default-features = false }
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
-
-[features]
-# Udev hotplug support (requires libudev-dev to be installed)
-hotplug = ["udev"]
-
-[dependencies.udev]
-version = "0.9"
-optional = true
