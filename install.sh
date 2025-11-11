@@ -4,6 +4,9 @@ set -e
 echo "Building cosmic-monitor-hack..."
 cargo build --release
 
+echo "Stopping existing service if it exists..."
+systemctl --user stop cosmic-monitor-hack.service || true
+
 echo "Installing binary..."
 mkdir -p ~/.local/bin
 cp target/release/cosmic-monitor-hack ~/.local/bin/cosmic-monitor-hack
