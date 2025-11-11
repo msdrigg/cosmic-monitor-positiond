@@ -3,15 +3,14 @@
 use calloop::{EventLoop, LoopHandle};
 use calloop_wayland_source::WaylandSource;
 use std::{process::Command, time::Duration};
+use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{
-    delegate_noop,
-    globals::{registry_queue_init, GlobalListContents},
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, QueueHandle, delegate_noop,
+    globals::{GlobalListContents, registry_queue_init},
 };
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1, ext_idle_notifier_v1,
 };
-use wayland_client::protocol::{wl_registry, wl_seat};
 
 const IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes in milliseconds
 const MAX_MONITOR_DETECTION_ATTEMPTS: u32 = 10;
@@ -43,7 +42,7 @@ struct State {
     idle_notifier: ext_idle_notifier_v1::ExtIdleNotifierV1,
     seat: wl_seat::WlSeat,
     idle_notification: Option<IdleNotification>,
-    loop_handle: LoopHandle<'static, Self>,
+    _loop_handle: LoopHandle<'static, Self>,
 }
 
 impl State {
@@ -72,7 +71,10 @@ impl State {
 
 fn position_monitors() {
     for attempt in 1..=MAX_MONITOR_DETECTION_ATTEMPTS {
-        println!("Checking for monitors (attempt {}/{})", attempt, MAX_MONITOR_DETECTION_ATTEMPTS);
+        println!(
+            "Checking for monitors (attempt {}/{})",
+            attempt, MAX_MONITOR_DETECTION_ATTEMPTS
+        );
 
         // Get list of connected outputs in KDL format
         let output = match Command::new("cosmic-randr")
@@ -132,7 +134,10 @@ fn position_monitors() {
         }
     }
 
-    eprintln!("Timeout: Not all monitors detected after {} seconds.", MAX_MONITOR_DETECTION_ATTEMPTS);
+    eprintln!(
+        "Timeout: Not all monitors detected after {} seconds.",
+        MAX_MONITOR_DETECTION_ATTEMPTS
+    );
 }
 
 fn main() {
@@ -165,7 +170,7 @@ fn main() {
         idle_notifier,
         seat,
         idle_notification: None,
-        loop_handle: event_loop.handle(),
+        _loop_handle: event_loop.handle(),
     };
 
     // Create initial idle notification
