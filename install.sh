@@ -22,5 +22,12 @@ systemctl --user enable cosmic-monitor-hack.service
 systemctl --user restart cosmic-monitor-hack.service
 
 echo "Installation complete!"
-echo "Check status with: systemctl --user status cosmic-monitor-hack.service"
-echo "View logs with: journalctl --user -u cosmic-monitor-hack.service -f"
+echo ""
+echo "Usage:"
+echo "  cosmic-monitor-hack save     - Save current monitor configuration"
+echo "  cosmic-monitor-hack apply    - Apply saved configuration once"
+echo "  cosmic-monitor-hack monitor  - Monitor for idle/resume (service mode)"
+echo ""
+echo "Service commands:"
+echo "  systemctl --user status cosmic-monitor-hack.service"
+echo "  journalctl --user -u cosmic-monitor-hack.service -f"
