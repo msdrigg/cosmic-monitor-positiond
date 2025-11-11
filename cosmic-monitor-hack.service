@@ -1,0 +1,15 @@
+[Unit]
+Description=COSMIC Monitor Positioning Daemon
+Documentation=https://github.com/pop-os/cosmic-comp
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cosmic-monitor-hack
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target
