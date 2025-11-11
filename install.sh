@@ -1,6 +1,32 @@
 #!/bin/bash
 set -e
 
+uninstall() {
+    echo "Uninstalling cosmic-monitor-hack..."
+
+    echo "Stopping and disabling service..."
+    systemctl --user stop cosmic-monitor-hack.service || true
+    systemctl --user disable cosmic-monitor-hack.service || true
+
+    echo "Removing systemd service file..."
+    rm -f ~/.config/systemd/user/cosmic-monitor-hack.service
+    systemctl --user daemon-reload
+
+    echo "Removing binary..."
+    rm -f ~/.local/bin/cosmic-monitor-hack
+
+    echo "Uninstallation complete!"
+    echo ""
+    echo "Note: Configuration files in ~/.config/cosmic-monitor-hack/ were not removed."
+    echo "Remove them manually if desired."
+    exit 0
+}
+
+# Check for --uninstall flag
+if [ "$1" = "--uninstall" ]; then
+    uninstall
+fi
+
 echo "Building cosmic-monitor-hack..."
 cargo build --release
 
@@ -31,3 +57,6 @@ echo ""
 echo "Service commands:"
 echo "  systemctl --user status cosmic-monitor-hack.service"
 echo "  journalctl --user -u cosmic-monitor-hack.service -f"
+echo ""
+echo "To uninstall:"
+echo "  ./install.sh --uninstall"

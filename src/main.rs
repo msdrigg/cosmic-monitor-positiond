@@ -1,10 +1,10 @@
 #![allow(clippy::single_match)]
 
-use calloop::{EventLoop, LoopHandle};
+use calloop::{timer::{Timer, TimeoutAction}, EventLoop, LoopHandle, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use clap::{Parser, Subcommand};
-use std::collections::HashMap;
-use std::{fs, path::PathBuf, process::Command, time::Duration};
+use cosmic_randr_shell::List;
+use std::{collections::HashMap, fs, path::PathBuf, time::Duration};
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{
     delegate_noop,
@@ -124,53 +124,20 @@ impl MonitorState {
         Ok(MonitorState { monitors })
     }
 
-    fn from_current() -> Option<Self> {
-        let output = Command::new("cosmic-randr")
-            .args(["list", "--kdl"])
-            .output()
-            .ok()?;
-
-        let outputs_str = std::str::from_utf8(&output.stdout).ok()?;
-        let document: kdl::KdlDocument = outputs_str.parse().ok()?;
+    async fn from_current() -> Option<Self> {
+        let list = cosmic_randr_shell::list().await.ok()?;
 
         let mut monitors = Vec::new();
 
-        for node in document.nodes() {
-            if node.name().value() != "output" {
+        for (_key, output) in list.outputs.iter() {
+            if !output.enabled {
                 continue;
             }
 
-            let output_name = node.entries().first()?.value().as_string()?;
-
-            let is_enabled = node
-                .entries()
-                .iter()
-                .skip(1)
-                .find(|e| e.name().map(|n| n.value()) == Some("enabled"))
-                .and_then(|e| e.value().as_bool())
-                .unwrap_or(false);
-
-            if !is_enabled {
-                continue;
-            }
-
-            // Get position from children
-            if let Some(children) = node.children() {
-                for child in children.nodes() {
-                    if child.name().value() == "position" {
-                        if let [x, y, ..] = child.entries() {
-                            let position = (
-                                x.value().as_integer().unwrap_or(0) as i32,
-                                y.value().as_integer().unwrap_or(0) as i32,
-                            );
-                            monitors.push(MonitorConfig {
-                                name: output_name.to_string(),
-                                position,
-                            });
-                        }
-                    }
-                }
-            }
+            monitors.push(MonitorConfig {
+                name: output.name.clone(),
+                position: output.position,
+            });
         }
 
         Some(MonitorState { monitors })
@@ -203,7 +170,8 @@ struct State {
     idle_notifier: ext_idle_notifier_v1::ExtIdleNotifierV1,
     seat: wl_seat::WlSeat,
     idle_notification: Option<IdleNotification>,
-    _loop_handle: LoopHandle<'static, Self>,
+    loop_handle: LoopHandle<'static, Self>,
+    loop_signal: LoopSignal,
 }
 
 impl State {
@@ -213,12 +181,39 @@ impl State {
 
     fn handle_resume(&mut self) {
         println!("resuming!");
+        self.trigger_reposition();
+    }
 
-        // Spawn monitor positioning in a separate thread to not block the event loop
-        std::thread::spawn(|| {
-            if let Err(e) = apply_monitor_config() {
-                eprintln!("Failed to apply monitor configuration: {}", e);
-            }
+    fn handle_hotplug(&mut self) {
+        println!("Display hotplug detected!");
+        self.trigger_reposition();
+    }
+
+    fn handle_config_change(&mut self) {
+        println!("Configuration file changed!");
+        self.trigger_reposition();
+    }
+
+    fn trigger_reposition(&mut self) {
+        let loop_handle = self.loop_handle.clone();
+        let loop_signal = self.loop_signal.clone();
+
+        // Start the apply process with retries
+        let timer = Timer::from_duration(Duration::from_secs(0));
+        let _ = loop_handle.insert_source(timer, move |_event, _metadata, _shared_data| {
+            // Spawn async task to apply monitors
+            let runtime = tokio::runtime::Handle::current();
+            let loop_signal_clone = loop_signal.clone();
+
+            runtime.spawn(async move {
+                if let Err(e) = apply_monitor_config_async().await {
+                    eprintln!("Failed to apply monitor configuration: {}", e);
+                }
+                // Signal might not be needed here, but keeping structure
+                drop(loop_signal_clone);
+            });
+
+            TimeoutAction::Drop
         });
     }
 
@@ -241,8 +236,8 @@ fn get_backoff_delay(attempt: usize) -> Duration {
     Duration::from_secs(seconds)
 }
 
-fn check_monitors(
-    document: &kdl::KdlDocument,
+async fn check_monitors(
+    list: &List,
     expected_monitors: &[MonitorConfig],
 ) -> HashMap<String, bool> {
     let mut found = HashMap::new();
@@ -251,30 +246,32 @@ fn check_monitors(
         found.insert(expected.name.clone(), false);
     }
 
-    for node in document.nodes() {
-        if node.name().value() != "output" {
-            continue;
-        }
-
-        if let Some(output_name) = node.entries().first().and_then(|e| e.value().as_string()) {
-            let is_enabled = node
-                .entries()
-                .iter()
-                .skip(1)
-                .find(|e| e.name().map(|n| n.value()) == Some("enabled"))
-                .and_then(|e| e.value().as_bool())
-                .unwrap_or(false);
-
-            if is_enabled && found.contains_key(output_name) {
-                found.insert(output_name.to_string(), true);
-            }
+    for (_key, output) in list.outputs.iter() {
+        if output.enabled && found.contains_key(&output.name) {
+            found.insert(output.name.clone(), true);
         }
     }
 
     found
 }
 
-fn apply_monitor_config() -> Result<(), String> {
+async fn apply_single_position(output_name: &str, x: i32, y: i32) -> Result<(), String> {
+    // Use subprocess to set position (cosmic-randr-shell doesn't expose a simple position API)
+    use std::process::Command;
+
+    let status = Command::new("cosmic-randr")
+        .args(["position", output_name, &x.to_string(), &y.to_string()])
+        .status()
+        .map_err(|e| format!("Failed to execute cosmic-randr: {}", e))?;
+
+    if !status.success() {
+        return Err(format!("cosmic-randr exited with status: {}", status));
+    }
+
+    Ok(())
+}
+
+async fn apply_monitor_config_async() -> Result<(), String> {
     let state = MonitorState::load().map_err(|e| format!("Failed to load state: {}", e))?;
 
     if state.monitors.is_empty() {
@@ -301,25 +298,17 @@ fn apply_monitor_config() -> Result<(), String> {
                 MAX_ATTEMPTS,
                 delay
             );
-            std::thread::sleep(delay);
+            tokio::time::sleep(delay).await;
         } else {
             println!("Attempt {}/{}: checking monitors...", attempt + 1, MAX_ATTEMPTS);
         }
 
         // Get list of connected outputs
-        let output = Command::new("cosmic-randr")
-            .args(["list", "--kdl"])
-            .output()
-            .map_err(|e| format!("Failed to execute cosmic-randr: {}", e))?;
+        let list = cosmic_randr_shell::list()
+            .await
+            .map_err(|e| format!("Failed to list outputs: {}", e))?;
 
-        let outputs_str = std::str::from_utf8(&output.stdout)
-            .map_err(|e| format!("Failed to parse cosmic-randr output: {}", e))?;
-
-        let document: kdl::KdlDocument = outputs_str
-            .parse()
-            .map_err(|e| format!("Failed to parse KDL document: {}", e))?;
-
-        let found_monitors = check_monitors(&document, &state.monitors);
+        let found_monitors = check_monitors(&list, &state.monitors).await;
         let all_found = found_monitors.values().all(|&v| v);
 
         // Log status of each monitor
@@ -333,14 +322,9 @@ fn apply_monitor_config() -> Result<(), String> {
 
             // Apply positions for all monitors
             for monitor in &state.monitors {
-                if let Err(e) = Command::new("cosmic-randr")
-                    .args([
-                        "position",
-                        &monitor.name,
-                        &monitor.position.0.to_string(),
-                        &monitor.position.1.to_string(),
-                    ])
-                    .status()
+                if let Err(e) =
+                    apply_single_position(&monitor.name, monitor.position.0, monitor.position.1)
+                        .await
                 {
                     eprintln!("Failed to position {}: {}", monitor.name, e);
                 } else {
@@ -362,9 +346,10 @@ fn apply_monitor_config() -> Result<(), String> {
     ))
 }
 
-fn save_current_config() -> Result<(), String> {
-    let state =
-        MonitorState::from_current().ok_or("Failed to get current monitor configuration")?;
+async fn save_current_config() -> Result<(), String> {
+    let state = MonitorState::from_current()
+        .await
+        .ok_or("Failed to get current monitor configuration")?;
 
     if state.monitors.is_empty() {
         return Err("No enabled monitors found".to_string());
@@ -386,26 +371,31 @@ fn save_current_config() -> Result<(), String> {
     Ok(())
 }
 
-fn run_monitor_mode() {
+fn run_monitor_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Check if state file exists, if not, save current configuration
     if !MonitorState::config_path().exists() {
         println!("No saved configuration found, saving current state...");
-        if let Err(e) = save_current_config() {
-            eprintln!("Warning: {}", e);
-            eprintln!("Continuing in monitor mode without saved state...");
-            return;
-        }
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            if let Err(e) = save_current_config().await {
+                eprintln!("Warning: {}", e);
+                eprintln!("Continuing in monitor mode without saved state...");
+            }
+        });
     }
 
     // Run monitor positioning on startup
     println!("Running initial monitor positioning check...");
-    if let Err(e) = apply_monitor_config() {
-        eprintln!("Warning: {}", e);
-    }
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        if let Err(e) = apply_monitor_config_async().await {
+            eprintln!("Warning: {}", e);
+        }
+    });
 
     // Setup Wayland connection
-    let connection = Connection::connect_to_env().unwrap();
-    let (globals, event_queue) = registry_queue_init::<State>(&connection).unwrap();
+    let connection = Connection::connect_to_env()?;
+    let (globals, event_queue) = registry_queue_init::<State>(&connection)?;
     let qh = event_queue.handle();
 
     // Bind to required Wayland protocols
@@ -418,53 +408,104 @@ fn run_monitor_mode() {
         .expect("wl_seat not available");
 
     // Create event loop
-    let mut event_loop: EventLoop<State> = EventLoop::try_new().unwrap();
+    let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
+    let loop_signal = event_loop.get_signal();
 
     let mut state = State {
         idle_notifier,
         seat,
         idle_notification: None,
-        _loop_handle: event_loop.handle(),
+        loop_handle: event_loop.handle(),
+        loop_signal: loop_signal.clone(),
     };
 
     // Create initial idle notification
     state.recreate_notification(&qh);
 
     // Setup Wayland event source
-    WaylandSource::new(connection, event_queue)
-        .insert(event_loop.handle())
-        .unwrap();
+    WaylandSource::new(connection, event_queue).insert(event_loop.handle())?;
 
+    // Setup udev monitor for DRM hotplug events (if feature is enabled)
+    #[cfg(feature = "hotplug")]
+    {
+        if let Err(e) = setup_udev_monitor(&event_loop.handle()) {
+            eprintln!("Warning: Failed to setup udev monitoring: {}", e);
+            eprintln!("Hotplug detection will not be available");
+        } else {
+            println!("Udev hotplug monitoring enabled");
+        }
+    }
+
+    // Setup inotify monitor for config file changes
+    // TODO: Re-enable after fixing inotify integration with calloop
+    // setup_config_monitor(&event_loop.handle())?;
+
+    #[cfg(feature = "hotplug")]
+    println!("Monitoring for idle/resume and hotplug events...");
+    #[cfg(not(feature = "hotplug"))]
     println!("Monitoring for idle/resume events...");
 
     // Run event loop
-    loop {
-        if event_loop.dispatch(None, &mut state).is_err() {
-            break;
-        }
-    }
+    event_loop.run(None, &mut state, |_| {})?;
+
+    Ok(())
 }
 
-fn main() {
+#[cfg(feature = "hotplug")]
+fn setup_udev_monitor(loop_handle: &LoopHandle<'static, State>) -> Result<(), Box<dyn std::error::Error>> {
+    let builder = udev::MonitorBuilder::new()?;
+    let builder = builder.match_subsystem("drm")?;
+    let socket = builder.listen()?;
+
+    let generic = calloop::generic::Generic::new(
+        socket,
+        calloop::Interest::READ,
+        calloop::Mode::Level,
+    );
+
+    loop_handle.insert_source(generic, |_readiness, socket, state| {
+        // Drain all events from the socket
+        for _event in socket.iter() {
+            // Any DRM event triggers a hotplug
+            state.handle_hotplug();
+            break; // Only trigger once per batch
+        }
+        Ok(calloop::PostAction::Continue)
+    })?;
+
+    Ok(())
+}
+
+// TODO: Re-enable config monitoring after fixing inotify integration
+// fn setup_config_monitor(loop_handle: &LoopHandle<'static, State>) -> Result<(), Box<dyn std::error::Error>> {
+//     use inotify::{Inotify, WatchMask};
+//     Ok(())
+// }
+
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Save => {
-            if let Err(e) = save_current_config() {
+            if let Err(e) = save_current_config().await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         Commands::Apply => {
-            if let Err(e) = apply_monitor_config() {
+            if let Err(e) = apply_monitor_config_async().await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         Commands::Monitor => {
-            run_monitor_mode();
+            if let Err(e) = run_monitor_mode() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
