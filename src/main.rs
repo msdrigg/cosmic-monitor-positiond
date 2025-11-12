@@ -1,8 +1,8 @@
 #![allow(clippy::single_match)]
 
-use calloop::{EventLoop, LoopSignal};
 #[cfg(feature = "autodetect")]
 use calloop::LoopHandle;
+use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use clap::{Parser, Subcommand};
 use cosmic_randr::context::HeadConfiguration;
@@ -105,6 +105,8 @@ impl MonitorState {
             doc[&monitor.name] = toml_edit::Item::Table(table);
         }
 
+        log::trace!("Saving TOML document:\n{}", doc.to_string());
+
         fs::write(config_path, doc.to_string())?;
         Ok(())
     }
@@ -112,9 +114,12 @@ impl MonitorState {
     fn load() -> std::io::Result<Self> {
         let config_path = Self::config_path();
         let content = fs::read_to_string(config_path)?;
+        log::trace!("Loaded configuration string:\n{}", content);
         let document: toml_edit::DocumentMut = content
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        log::trace!("Parsed TOML document:\n{}", document.to_string());
 
         let mut monitors = Vec::new();
         for (key, value) in document.iter() {
@@ -361,19 +366,20 @@ async fn apply_monitor_config_async(
                         log::info!("Monitor configuration applied successfully after {} attempt(s)", attempt_counter);
                         attempt_counter = 0; // Reset counter after success
                         timer.as_mut().reset(tokio::time::Instant::now() + FOREVER_FROM_NOW);
+                        continue;
                     }
                     Err(e) => {
                         log::warn!("Attempt {} failed: {}", attempt_counter, e);
                         if attempt_counter >= MAX_ATTEMPTS {
                             return Err(format!("Maximum attempts ({}) reached without success", MAX_ATTEMPTS));
                         }
+
+                        // Schedule next attempt
+                        let delay = get_backoff_delay(attempt_counter.max(1) - 1);
+                        // timer = tokio::time::sleep(delay);
+                        timer.as_mut().reset(tokio::time::Instant::now() + delay);
                     }
                 }
-
-                // Schedule next attempt
-                let delay = get_backoff_delay(attempt_counter - 1);
-                // timer = tokio::time::sleep(delay);
-                timer.as_mut().reset(tokio::time::Instant::now() + delay);
         }
         _ = tokio::signal::ctrl_c() => {
                 log::trace!("Ctrl-C received, exiting monitor repositioning task");
@@ -507,8 +513,9 @@ fn setup_udev_monitor(
 }
 
 fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::error::Error>> {
-    // Check if state file exists, if not, save current configuration
-    if !MonitorState::config_path().exists() {
+    let current_monitors = MonitorState::load();
+    // If invalid or empty configuration, save current state
+    if current_monitors.map_or(true, |m| m.monitors.is_empty()) {
         log::info!("No saved configuration found, saving current state...");
         if let Err(e) = rt.block_on(save_current_config()) {
             log::warn!(
@@ -544,12 +551,6 @@ fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::erro
         loop_signal: event_loop.get_signal().clone(),
     };
 
-    // Run monitor positioning on startup
-    log::info!("Running initial monitor positioning check...");
-    if let Err(e) = rt.block_on(apply_monitor_config_once()) {
-        log::error!("Initial monitor positioning failed: {}", e);
-    }
-
     // Create initial idle notification
     state.recreate_notification(&qh);
 
@@ -570,12 +571,15 @@ fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::erro
             log::info!("Udev hotplug monitoring enabled");
         }
     }
+    let loop_signal = event_loop.get_signal().clone();
 
     rt.spawn(async move {
         // Select between ctrl_c and reposition requests...
         match apply_monitor_config_async(reposition_rx).await {
             Ok(_) => {
                 log::info!("Monitor repositioning task exited normally");
+                loop_signal.stop();
+                loop_signal.wakeup();
             }
             Err(e) => {
                 log::error!("Monitor repositioning task exited with error: {}", e);

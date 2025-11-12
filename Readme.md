@@ -20,7 +20,7 @@ This will build the project and install a user-level systemctl file that runs on
 
 **Changing your saved position**
 
-- If you get another monitor or you want to change your default setup, you can save it by running `~/.local/bin/cosmic-monitor-positiond save`
+- If you want to change your monitor arangement, you can manually set your arangement in system settings, and then run `~/.local/bin/cosmic-monitor-positiond save` to have cosmic-monitor-positiond save your changes
 
 **Uninsatlling**
 

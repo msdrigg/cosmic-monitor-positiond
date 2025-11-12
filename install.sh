@@ -46,11 +46,6 @@ echo "Installing systemd service..."
 mkdir -p ~/.config/systemd/user
 cp cosmic-monitor-positiond.service ~/.config/systemd/user/cosmic-monitor-positiond.service
 
-echo "Enabling and starting service..."
-systemctl --user daemon-reload
-systemctl --user enable cosmic-monitor-positiond.service
-systemctl --user restart cosmic-monitor-positiond.service
-
 echo "Creating default config file if it doesn't exist..."
 mkdir -p ~/.config/cosmic-monitor-positiond
 if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
@@ -75,10 +70,16 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 # y = 0
 #
 # Run 'cosmic-monitor-positiond save' to save your current monitor layout.
+# Run 'cosmic-randr list' to see available monitor names and their current positions
 
 EOF
     echo "Created default config file at ~/.config/cosmic-monitor-positiond/state.toml"
 fi
+
+echo "Enabling and starting service..."
+systemctl --user daemon-reload
+systemctl --user enable cosmic-monitor-positiond.service
+systemctl --user restart cosmic-monitor-positiond.service
 
 echo "Installation complete!"
 echo ""
