@@ -19,9 +19,11 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 const IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes in milliseconds
 const MAX_ATTEMPTS: usize = 30;
 
+const FOREVER_FROM_NOW: Duration = Duration::from_secs(365 * 24 * 60 * 60 * 10); // 10 years
+
 /// COSMIC monitor positioning daemon
 #[derive(Parser, Debug)]
-#[command(name = "cosmic-monitor-hack")]
+#[command(name = "cosmic-monitor-positiond")]
 #[command(about = "Automatically position monitors in COSMIC DE")]
 struct Cli {
     #[command(subcommand)]
@@ -78,6 +80,7 @@ impl MonitorConfig {
     }
 }
 
+#[derive(Debug)]
 struct MonitorState {
     monitors: Vec<MonitorConfig>,
 }
@@ -87,7 +90,7 @@ impl MonitorState {
         let home = std::env::var("HOME").expect("HOME environment variable not set");
         PathBuf::from(home)
             .join(".config")
-            .join("cosmic-monitor-hack")
+            .join("cosmic-monitor-positiond")
             .join("state.kdl")
     }
 
@@ -255,7 +258,7 @@ async fn apply_monitor_config_once() -> Result<(), String> {
         return Err("No monitors configured".to_string());
     }
 
-    println!(
+    log::trace!(
         "Looking for {} monitor(s): {}",
         state.monitors.len(),
         state
@@ -282,11 +285,14 @@ async fn apply_monitor_config_once() -> Result<(), String> {
     // Log status of each monitor
     for (name, found) in &found_monitors {
         let status = if *found { "✓" } else { "✗" };
-        println!("  {} {}", status, name);
+        log::trace!("  {} {}", status, name);
     }
 
     if all_found {
-        println!("All monitors detected! Applying configuration...");
+        log::info!(
+            "All {} monitors detected! Applying configuration...",
+            found_monitors.len()
+        );
 
         // Apply positions for all monitors
         for monitor in &state.monitors {
@@ -309,11 +315,13 @@ async fn apply_monitor_config_once() -> Result<(), String> {
             )
             .await
             {
-                eprintln!("Failed to position {}: {}", monitor.name, e);
+                log::error!("Failed to position {}: {}", monitor.name, e);
             } else {
-                println!(
+                log::trace!(
                     "Positioned {} at ({}, {})",
-                    monitor.name, monitor.position.0, monitor.position.1
+                    monitor.name,
+                    monitor.position.0,
+                    monitor.position.1
                 );
             }
         }
@@ -343,17 +351,19 @@ async fn apply_monitor_config_async(
             _ = &mut timer => {
                 attempt_counter += 1;
                 if attempt_counter > MAX_ATTEMPTS {
-                    timer.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(86400 * 365));
+                    log::warn!("Maximum attempts ({}) reached, not re-trying reposition for now", MAX_ATTEMPTS);
+                    timer.as_mut().reset(tokio::time::Instant::now() + FOREVER_FROM_NOW);
                 }
-                println!("Reposition attempt #{}/{}", attempt_counter, MAX_ATTEMPTS);
+                log::trace!("Reposition attempt #{}/{}", attempt_counter, MAX_ATTEMPTS);
 
                 match apply_monitor_config_once().await {
                     Ok(_) => {
-                        println!("Monitor configuration applied successfully after {} attempt(s)", attempt_counter);
+                        log::info!("Monitor configuration applied successfully after {} attempt(s)", attempt_counter);
                         attempt_counter = 0; // Reset counter after success
+                        timer.as_mut().reset(tokio::time::Instant::now() + FOREVER_FROM_NOW);
                     }
                     Err(e) => {
-                        eprintln!("Attempt {} failed: {}", attempt_counter, e);
+                        log::warn!("Attempt {} failed: {}", attempt_counter, e);
                         if attempt_counter >= MAX_ATTEMPTS {
                             return Err(format!("Maximum attempts ({}) reached without success", MAX_ATTEMPTS));
                         }
@@ -366,7 +376,7 @@ async fn apply_monitor_config_async(
                 timer.as_mut().reset(tokio::time::Instant::now() + delay);
         }
         _ = tokio::signal::ctrl_c() => {
-                println!("Ctrl-C received, exiting monitor repositioning task");
+                log::trace!("Ctrl-C received, exiting monitor repositioning task");
                 return Ok(());
             }
         }
@@ -382,14 +392,17 @@ async fn save_current_config() -> Result<(), String> {
         return Err("No enabled monitors found".to_string());
     }
 
-    println!(
+    log::trace!(
         "Saving configuration for {} monitor(s):",
         state.monitors.len()
     );
+
     for monitor in &state.monitors {
-        println!(
+        log::trace!(
             "  {} at ({}, {})",
-            monitor.name, monitor.position.0, monitor.position.1
+            monitor.name,
+            monitor.position.0,
+            monitor.position.1
         );
     }
 
@@ -397,7 +410,10 @@ async fn save_current_config() -> Result<(), String> {
         .save()
         .map_err(|e| format!("Failed to save configuration: {}", e))?;
 
-    println!("Configuration saved to {:?}", MonitorState::config_path());
+    log::info!(
+        "Monitor configuration saved to {:?} successfully",
+        MonitorState::config_path()
+    );
     Ok(())
 }
 
@@ -434,24 +450,24 @@ impl Drop for IdleNotification {
 
 impl IdleMonitorState {
     fn handle_idle(&mut self) {
-        println!("idling!");
+        log::trace!("System idle detected, doing nothing...");
     }
 
     fn handle_resume(&mut self) {
-        println!("resuming!");
+        log::info!("System resumed from idle, triggering monitor reposition");
         self.trigger_reposition();
     }
 
     #[cfg(feature = "autodetect")]
     fn handle_hotplug(&mut self) {
-        println!("Display hotplug detected!");
+        log::info!("Display hotplug event detected, triggering monitor reposition");
         self.trigger_reposition();
     }
 
     fn trigger_reposition(&mut self) {
         if let Err(err) = self.reposition_handler.send(()) {
             // Monitor has exited, we should exit
-            eprintln!("Reposition handler error: {}", err);
+            log::error!("Failed to send reposition request, shutting down: {}", err);
             self.loop_signal.stop();
         }
     }
@@ -492,10 +508,12 @@ fn setup_udev_monitor(
 fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::error::Error>> {
     // Check if state file exists, if not, save current configuration
     if !MonitorState::config_path().exists() {
-        println!("No saved configuration found, saving current state...");
+        log::info!("No saved configuration found, saving current state...");
         if let Err(e) = rt.block_on(save_current_config()) {
-            eprintln!("Warning: {}", e);
-            eprintln!("Continuing in monitor mode without saved state...");
+            log::warn!(
+                "Warning. Failed to save configuration. continuing in monitor mode without saved state: {}",
+                e
+            )
         }
     }
 
@@ -526,9 +544,9 @@ fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::erro
     };
 
     // Run monitor positioning on startup
-    println!("Running initial monitor positioning check...");
+    log::info!("Running initial monitor positioning check...");
     if let Err(e) = rt.block_on(apply_monitor_config_once()) {
-        eprintln!("Warning: {}", e);
+        log::error!("Initial monitor positioning failed: {}", e);
     }
 
     // Create initial idle notification
@@ -537,18 +555,18 @@ fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::erro
     // Setup Wayland event source
     WaylandSource::new(connection, event_queue).insert(event_loop.handle())?;
 
-    println!("Monitoring for idle/resume events...");
+    log::info!("Entering monitor mode, waiting for resume events...");
 
     // Setup udev monitor for DRM hotplug events (if feature is enabled)
-
     #[cfg(feature = "autodetect")]
     {
         if let Err(e) = setup_udev_monitor(&event_loop.handle()) {
-            eprintln!("Warning: Failed to setup udev monitoring: {}", e);
-
-            eprintln!("Hotplug detection will not be available");
+            log::warn!(
+                "Failed to setup udev monitoring, hotplug detection won't be available: {}",
+                e
+            );
         } else {
-            println!("Udev hotplug monitoring enabled");
+            log::info!("Udev hotplug monitoring enabled");
         }
     }
 
@@ -556,21 +574,19 @@ fn run_monitor_mode(rt: tokio::runtime::Runtime) -> Result<(), Box<dyn std::erro
         // Select between ctrl_c and reposition requests...
         match apply_monitor_config_async(reposition_rx).await {
             Ok(_) => {
-                println!("Monitor repositioning task exited");
+                log::info!("Monitor repositioning task exited normally");
             }
             Err(e) => {
-                eprintln!("Error applying monitor configuration: {}", e);
+                log::error!("Monitor repositioning task exited with error: {}", e);
             }
         }
     });
 
-    // Run tokio event loop
     event_loop.run(None, &mut state, |_| {})?;
 
     Ok(())
 }
 
-// #[tokio::main(flavor = "current_thread")]
 fn main() {
     env_logger::init();
 
@@ -586,21 +602,21 @@ fn main() {
     match cli.command {
         Commands::Save => {
             if let Err(e) = rt.block_on(save_current_config()) {
-                eprintln!("Error: {}", e);
+                log::error!("Error: {}", e);
                 std::process::exit(1);
             }
         }
         Commands::Apply => {
             if let Err(e) = rt.block_on(apply_monitor_config_once()) {
-                eprintln!("Error: {}", e);
+                log::error!("Error: {}", e);
                 std::process::exit(1);
             } else {
-                println!("Monitor configuration applied successfully!");
+                log::info!("Monitor configuration applied successfully");
             }
         }
         Commands::Monitor => {
             if let Err(e) = run_monitor_mode(rt) {
-                eprintln!("Error: {}", e);
+                log::error!("Error: {}", e);
                 std::process::exit(1);
             }
         }
