@@ -50,27 +50,41 @@ echo "Creating default config file if it doesn't exist..."
 mkdir -p ~/.config/cosmic-monitor-positiond
 if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
     cat > ~/.config/cosmic-monitor-positiond/state.toml << 'EOF'
-# COSMIC Monitor Position Configuration
+# COSMIC Monitor Configuration
 #
-# This file stores the positions of your monitors in TOML format.
-# Each monitor is defined as a table with x and y coordinates.
+# This file stores your monitor configurations in TOML format.
+# Each monitor is defined as a table with various display properties.
+#
+# All fields are optional. Leave them out or set to null to use automatic values.
+# Run 'cosmic-monitor-positiond save' to save your current monitor configuration.
 #
 # Format:
 # [MonitorName]
-# x = <x-coordinate>
-# y = <y-coordinate>
+# serial_number = "string"              # Monitor serial number
+# pos = [x, y]                          # Position in pixels
+# size = [width, height]                # Resolution in pixels
+# refresh = millihertz                  # Refresh rate in millihertz (e.g., 59951 for ~60Hz)
+# adaptive_sync = "mode"                # "Disabled", "Automatic", or "Always"
+# scale = float                         # Display scaling factor (e.g., 1.0, 1.5, 2.0)
+# transform = "orientation"             # "normal", "90", "180", "270", "flipped", etc.
+# primary = boolean                     # Set as primary display for X11 apps
 #
 # Example:
 # [HDMI-1]
-# x = 0
-# y = 0
+# serial_number = "123123031"
+# pos = [0, 0]
+# size = [2560, 1440]
+# refresh = 59951
+# adaptive_sync = "Automatic"
+# scale = 1.0
+# transform = "normal"
+# primary = true
 #
 # [DP-1]
-# x = 1920
-# y = 0
-#
-# Run 'cosmic-monitor-positiond save' to save your current monitor layout.
-# Run 'cosmic-randr list' to see available monitor names and their current positions
+# pos = [2560, 0]
+# size = [1920, 1080]
+# refresh = 60000
+# scale = 1.0
 
 EOF
     echo "Created default config file at ~/.config/cosmic-monitor-positiond/state.toml"

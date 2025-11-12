@@ -6,8 +6,10 @@ use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use clap::{Parser, Subcommand};
 use cosmic_randr::context::HeadConfiguration;
-use cosmic_randr::{Context, Message};
+use cosmic_randr::{AdaptiveSyncStateExt, Context, Message};
+use cosmic_randr_shell::Transform as ShellTransform;
 use std::{fs, path::PathBuf, time::Duration};
+use wayland_client::protocol::wl_output::Transform as WlTransform;
 use tachyonix::Receiver;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{
@@ -42,26 +44,173 @@ enum Commands {
     Monitor,
 }
 
+fn convert_wl_transform_to_shell(wl: WlTransform) -> ShellTransform {
+    match wl {
+        WlTransform::Normal => ShellTransform::Normal,
+        WlTransform::_90 => ShellTransform::Rotate90,
+        WlTransform::_180 => ShellTransform::Rotate180,
+        WlTransform::_270 => ShellTransform::Rotate270,
+        WlTransform::Flipped => ShellTransform::Flipped,
+        WlTransform::Flipped90 => ShellTransform::Flipped90,
+        WlTransform::Flipped180 => ShellTransform::Flipped180,
+        WlTransform::Flipped270 => ShellTransform::Flipped270,
+        _ => ShellTransform::Normal,
+    }
+}
+
+fn convert_shell_transform_to_wl(shell: ShellTransform) -> WlTransform {
+    match shell {
+        ShellTransform::Normal => WlTransform::Normal,
+        ShellTransform::Rotate90 => WlTransform::_90,
+        ShellTransform::Rotate180 => WlTransform::_180,
+        ShellTransform::Rotate270 => WlTransform::_270,
+        ShellTransform::Flipped => WlTransform::Flipped,
+        ShellTransform::Flipped90 => WlTransform::Flipped90,
+        ShellTransform::Flipped180 => WlTransform::Flipped180,
+        ShellTransform::Flipped270 => WlTransform::Flipped270,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MonitorConfig {
     name: String,
-    position: (i32, i32),
+    serial_number: Option<String>,
+    pos: Option<(i32, i32)>,
+    size: Option<(u32, u32)>,
+    refresh: Option<f32>,
+    adaptive_sync: Option<AdaptiveSyncStateExt>,
+    scale: Option<f64>,
+    transform: Option<ShellTransform>,
+    primary: Option<bool>,
 }
 
 impl MonitorConfig {
     fn to_toml_table(&self) -> toml_edit::Table {
         let mut table = toml_edit::Table::new();
-        table.insert("x", toml_edit::value(self.position.0 as i64));
-        table.insert("y", toml_edit::value(self.position.1 as i64));
+
+        if let Some(serial_number) = &self.serial_number {
+            table.insert("serial_number", toml_edit::value(serial_number.as_str()));
+        }
+
+        if let Some((x, y)) = self.pos {
+            let mut array = toml_edit::Array::new();
+            array.push(x as i64);
+            array.push(y as i64);
+            table.insert("pos", toml_edit::value(array));
+        }
+
+        if let Some((width, height)) = self.size {
+            let mut array = toml_edit::Array::new();
+            array.push(width as i64);
+            array.push(height as i64);
+            table.insert("size", toml_edit::value(array));
+        }
+
+        if let Some(refresh) = self.refresh {
+            // Convert Hz to millihertz for storage
+            table.insert("refresh", toml_edit::value((refresh * 1000.0) as i64));
+        }
+
+        if let Some(adaptive_sync) = &self.adaptive_sync {
+            let value_str = match adaptive_sync {
+                AdaptiveSyncStateExt::Disabled => "Disabled",
+                AdaptiveSyncStateExt::Automatic => "Automatic",
+                AdaptiveSyncStateExt::Always => "Always",
+                _ => "Automatic", // Default for unknown values
+            };
+            table.insert("adaptive_sync", toml_edit::value(value_str));
+        }
+
+        if let Some(scale) = self.scale {
+            table.insert("scale", toml_edit::value(scale));
+        }
+
+        if let Some(transform) = &self.transform {
+            let value_str = match transform {
+                ShellTransform::Normal => "normal",
+                ShellTransform::Rotate90 => "90",
+                ShellTransform::Rotate180 => "180",
+                ShellTransform::Rotate270 => "270",
+                ShellTransform::Flipped => "flipped",
+                ShellTransform::Flipped90 => "flipped-90",
+                ShellTransform::Flipped180 => "flipped-180",
+                ShellTransform::Flipped270 => "flipped-270",
+            };
+            table.insert("transform", toml_edit::value(value_str));
+        }
+
+        if let Some(primary) = self.primary {
+            table.insert("primary", toml_edit::value(primary));
+        }
+
         table
     }
 
     fn from_toml_table(name: String, table: &toml_edit::Table) -> Option<Self> {
-        let x = table.get("x")?.as_integer()? as i32;
-        let y = table.get("y")?.as_integer()? as i32;
+        let serial_number = table
+            .get("serial_number")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let pos = table.get("pos").and_then(|v| {
+            let array = v.as_array()?;
+            let x = array.get(0)?.as_integer()? as i32;
+            let y = array.get(1)?.as_integer()? as i32;
+            Some((x, y))
+        });
+
+        let size = table.get("size").and_then(|v| {
+            let array = v.as_array()?;
+            let width = array.get(0)?.as_integer()? as u32;
+            let height = array.get(1)?.as_integer()? as u32;
+            Some((width, height))
+        });
+
+        let refresh = table.get("refresh").and_then(|v| {
+            // Convert millihertz to Hz
+            let millihertz = v.as_integer()? as f32;
+            Some(millihertz / 1000.0)
+        });
+
+        let adaptive_sync = table
+            .get("adaptive_sync")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "Disabled" => Some(AdaptiveSyncStateExt::Disabled),
+                "Automatic" => Some(AdaptiveSyncStateExt::Automatic),
+                "Always" => Some(AdaptiveSyncStateExt::Always),
+                _ => None,
+            });
+
+        let scale = table.get("scale").and_then(|v| v.as_float());
+
+        let transform = table
+            .get("transform")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "normal" => Some(ShellTransform::Normal),
+                "90" => Some(ShellTransform::Rotate90),
+                "180" => Some(ShellTransform::Rotate180),
+                "270" => Some(ShellTransform::Rotate270),
+                "flipped" => Some(ShellTransform::Flipped),
+                "flipped-90" => Some(ShellTransform::Flipped90),
+                "flipped-180" => Some(ShellTransform::Flipped180),
+                "flipped-270" => Some(ShellTransform::Flipped270),
+                _ => None,
+            });
+
+        let primary = table.get("primary").and_then(|v| v.as_bool());
+
         Some(MonitorConfig {
             name,
-            position: (x, y),
+            serial_number,
+            pos,
+            size,
+            refresh,
+            adaptive_sync,
+            scale,
+            transform,
+            primary,
         })
     }
 }
@@ -149,9 +298,34 @@ impl MonitorState {
                 continue;
             }
 
+            // Get size and refresh from current mode
+            let (size, refresh) = if let Some(mode_id) = &head.current_mode {
+                if let Some(mode) = head.modes.get(mode_id) {
+                    (
+                        Some((mode.width as u32, mode.height as u32)),
+                        Some(mode.refresh as f32),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
             monitors.push(MonitorConfig {
                 name: head.name.clone(),
-                position: (head.position_x, head.position_y),
+                serial_number: if head.serial_number.is_empty() {
+                    None
+                } else {
+                    Some(head.serial_number.clone())
+                },
+                pos: Some((head.position_x, head.position_y)),
+                size,
+                refresh,
+                adaptive_sync: head.adaptive_sync.clone(),
+                scale: Some(head.scale),
+                transform: head.transform.map(convert_wl_transform_to_shell),
+                primary: head.xwayland_primary,
             });
         }
 
@@ -208,26 +382,35 @@ async fn receive_config_messages(
     }
 }
 
-async fn set_position(
+async fn apply_monitor_config(
     context: &mut Context,
     event_queue: &mut EventQueue<Context>,
     message_rx: &mut Receiver<Message>,
-    name: &str,
-    x: i32,
-    y: i32,
+    monitor: &MonitorConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = context.create_output_config();
     config.enable_head(
-        name,
+        &monitor.name,
         Some(HeadConfiguration {
-            pos: Some((x, y)),
-            ..Default::default()
+            pos: monitor.pos,
+            size: monitor.size,
+            refresh: monitor.refresh,
+            adaptive_sync: monitor.adaptive_sync.clone(),
+            scale: monitor.scale,
+            transform: monitor.transform.map(convert_shell_transform_to_wl),
         }),
     )?;
 
     config.apply();
 
-    receive_config_messages(context, event_queue, message_rx).await
+    receive_config_messages(context, event_queue, message_rx).await?;
+
+    // Handle primary flag separately after applying the config
+    if monitor.primary == Some(true) {
+        context.set_xwayland_primary(Some(&monitor.name))?;
+    }
+
+    Ok(())
 }
 
 fn get_backoff_delay(attempt: usize) -> Duration {
@@ -299,9 +482,9 @@ async fn apply_monitor_config_once() -> Result<(), String> {
             found_monitors.len()
         );
 
-        // Apply positions for all monitors
+        // Apply configuration for all monitors
         for monitor in &state.monitors {
-            // Create new connection for each position command
+            // Create new connection for each configuration command
             let (message_tx, mut message_rx) = tachyonix::channel(5);
             let (mut context, mut event_queue) = cosmic_randr::connect(message_tx)
                 .map_err(|e| format!("Failed to connect: {}", e))?;
@@ -310,24 +493,17 @@ async fn apply_monitor_config_once() -> Result<(), String> {
                 .await
                 .map_err(|e| format!("Failed to initialize: {}", e))?;
 
-            if let Err(e) = set_position(
+            if let Err(e) = apply_monitor_config(
                 &mut context,
                 &mut event_queue,
                 &mut message_rx,
-                &monitor.name,
-                monitor.position.0,
-                monitor.position.1,
+                monitor,
             )
             .await
             {
-                log::error!("Failed to position {}: {}", monitor.name, e);
+                log::error!("Failed to configure {}: {}", monitor.name, e);
             } else {
-                log::trace!(
-                    "Positioned {} at ({}, {})",
-                    monitor.name,
-                    monitor.position.0,
-                    monitor.position.1
-                );
+                log::trace!("Applied configuration for {}", monitor.name);
             }
         }
 
@@ -404,12 +580,25 @@ async fn save_current_config() -> Result<(), String> {
     );
 
     for monitor in &state.monitors {
-        log::trace!(
-            "  {} at ({}, {})",
-            monitor.name,
-            monitor.position.0,
-            monitor.position.1
-        );
+        log::trace!("  {}", monitor.name);
+        if let Some(serial) = &monitor.serial_number {
+            log::trace!("    serial_number: {}", serial);
+        }
+        if let Some((x, y)) = monitor.pos {
+            log::trace!("    pos: [{}, {}]", x, y);
+        }
+        if let Some((w, h)) = monitor.size {
+            log::trace!("    size: [{}x{}]", w, h);
+        }
+        if let Some(refresh) = monitor.refresh {
+            log::trace!("    refresh: {:.2} Hz", refresh);
+        }
+        if let Some(scale) = monitor.scale {
+            log::trace!("    scale: {}", scale);
+        }
+        if let Some(primary) = monitor.primary {
+            log::trace!("    primary: {}", primary);
+        }
     }
 
     state
