@@ -242,16 +242,23 @@ impl MonitorState {
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
         } else {
-            let mut doc = toml_edit::DocumentMut::new();
-            // Add header comment for new files
-            doc.as_table_mut().set_implicit(true);
-            doc
+            toml_edit::DocumentMut::new()
         };
+
+        // Ensure [monitors] table exists
+        if !doc.contains_key("monitors") {
+            doc["monitors"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+
+        // Get the monitors table (we know it exists now)
+        let monitors_table = doc["monitors"]
+            .as_table_mut()
+            .expect("monitors should be a table");
 
         // Update or add each monitor
         for monitor in &self.monitors {
             let table = monitor.to_toml_table();
-            doc[&monitor.name] = toml_edit::Item::Table(table);
+            monitors_table.insert(&monitor.name, toml_edit::Item::Table(table));
         }
 
         log::trace!("Saving TOML document:\n{}", doc.to_string());
@@ -270,8 +277,18 @@ impl MonitorState {
 
         log::trace!("Parsed TOML document:\n{}", document.to_string());
 
+        // Check if [monitors] table exists
+        let monitors_table = document.get("monitors")
+            .and_then(|item| item.as_table())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Configuration must have a [monitors] table"
+                )
+            })?;
+
         let mut monitors = Vec::new();
-        for (key, value) in document.iter() {
+        for (key, value) in monitors_table.iter() {
             if let Some(table) = value.as_table() {
                 if let Some(monitor) = MonitorConfig::from_toml_table(key.to_string(), table) {
                     monitors.push(monitor);
