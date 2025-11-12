@@ -1,6 +1,8 @@
 #![allow(clippy::single_match)]
 
-use calloop::{EventLoop, LoopHandle, LoopSignal};
+use calloop::{EventLoop, LoopSignal};
+#[cfg(feature = "autodetect")]
+use calloop::LoopHandle;
 use calloop_wayland_source::WaylandSource;
 use clap::{Parser, Subcommand};
 use cosmic_randr::context::HeadConfiguration;
@@ -47,36 +49,20 @@ struct MonitorConfig {
 }
 
 impl MonitorConfig {
-    fn to_kdl(&self) -> kdl::KdlNode {
-        let mut node = kdl::KdlNode::new("monitor");
-        node.push(self.name.clone());
-
-        let mut children = kdl::KdlDocument::new();
-        let mut position_node = kdl::KdlNode::new("position");
-        position_node.push(self.position.0 as i128);
-        position_node.push(self.position.1 as i128);
-        children.nodes_mut().push(position_node);
-
-        node.set_children(children);
-        node
+    fn to_toml_table(&self) -> toml_edit::Table {
+        let mut table = toml_edit::Table::new();
+        table.insert("x", toml_edit::value(self.position.0 as i64));
+        table.insert("y", toml_edit::value(self.position.1 as i64));
+        table
     }
 
-    fn from_kdl(node: &kdl::KdlNode) -> Option<Self> {
-        let name = node.entries().first()?.value().as_string()?.to_string();
-
-        let children = node.children()?;
-        for child in children.nodes() {
-            if child.name().value() == "position"
-                && let [x, y, ..] = child.entries()
-            {
-                let position = (
-                    x.value().as_integer()? as i32,
-                    y.value().as_integer()? as i32,
-                );
-                return Some(MonitorConfig { name, position });
-            }
-        }
-        None
+    fn from_toml_table(name: String, table: &toml_edit::Table) -> Option<Self> {
+        let x = table.get("x")?.as_integer()? as i32;
+        let y = table.get("y")?.as_integer()? as i32;
+        Some(MonitorConfig {
+            name,
+            position: (x, y),
+        })
     }
 }
 
@@ -91,7 +77,7 @@ impl MonitorState {
         PathBuf::from(home)
             .join(".config")
             .join("cosmic-monitor-positiond")
-            .join("state.kdl")
+            .join("state.toml")
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -100,9 +86,23 @@ impl MonitorState {
             fs::create_dir_all(parent)?;
         }
 
-        let mut doc = kdl::KdlDocument::new();
+        // Load existing document or create a new one
+        let mut doc = if config_path.exists() {
+            let content = fs::read_to_string(&config_path)?;
+            content
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        } else {
+            let mut doc = toml_edit::DocumentMut::new();
+            // Add header comment for new files
+            doc.as_table_mut().set_implicit(true);
+            doc
+        };
+
+        // Update or add each monitor
         for monitor in &self.monitors {
-            doc.nodes_mut().push(monitor.to_kdl());
+            let table = monitor.to_toml_table();
+            doc[&monitor.name] = toml_edit::Item::Table(table);
         }
 
         fs::write(config_path, doc.to_string())?;
@@ -112,16 +112,16 @@ impl MonitorState {
     fn load() -> std::io::Result<Self> {
         let config_path = Self::config_path();
         let content = fs::read_to_string(config_path)?;
-        let document: kdl::KdlDocument = content
+        let document: toml_edit::DocumentMut = content
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let mut monitors = Vec::new();
-        for node in document.nodes() {
-            if node.name().value() == "monitor"
-                && let Some(monitor) = MonitorConfig::from_kdl(node)
-            {
-                monitors.push(monitor);
+        for (key, value) in document.iter() {
+            if let Some(table) = value.as_table() {
+                if let Some(monitor) = MonitorConfig::from_toml_table(key.to_string(), table) {
+                    monitors.push(monitor);
+                }
             }
         }
 
@@ -482,6 +482,7 @@ impl IdleMonitorState {
     }
 }
 
+#[cfg(feature = "autodetect")]
 fn setup_udev_monitor(
     loop_handle: &LoopHandle<'static, IdleMonitorState>,
 ) -> Result<(), Box<dyn std::error::Error>> {

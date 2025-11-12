@@ -51,6 +51,35 @@ systemctl --user daemon-reload
 systemctl --user enable cosmic-monitor-positiond.service
 systemctl --user restart cosmic-monitor-positiond.service
 
+echo "Creating default config file if it doesn't exist..."
+mkdir -p ~/.config/cosmic-monitor-positiond
+if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
+    cat > ~/.config/cosmic-monitor-positiond/state.toml << 'EOF'
+# COSMIC Monitor Position Configuration
+#
+# This file stores the positions of your monitors in TOML format.
+# Each monitor is defined as a table with x and y coordinates.
+#
+# Format:
+# [MonitorName]
+# x = <x-coordinate>
+# y = <y-coordinate>
+#
+# Example:
+# [HDMI-1]
+# x = 0
+# y = 0
+#
+# [DP-1]
+# x = 1920
+# y = 0
+#
+# Run 'cosmic-monitor-positiond save' to save your current monitor layout.
+
+EOF
+    echo "Created default config file at ~/.config/cosmic-monitor-positiond/state.toml"
+fi
+
 echo "Installation complete!"
 echo ""
 echo "Usage:"
