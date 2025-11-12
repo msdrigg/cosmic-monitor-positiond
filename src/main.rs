@@ -9,8 +9,8 @@ use cosmic_randr::context::HeadConfiguration;
 use cosmic_randr::{AdaptiveSyncStateExt, Context, Message};
 use cosmic_randr_shell::Transform as ShellTransform;
 use std::{fs, path::PathBuf, time::Duration};
-use wayland_client::protocol::wl_output::Transform as WlTransform;
 use tachyonix::Receiver;
+use wayland_client::protocol::wl_output::Transform as WlTransform;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
@@ -77,7 +77,7 @@ struct MonitorConfig {
     serial_number: Option<String>,
     pos: Option<(i32, i32)>,
     size: Option<(u32, u32)>,
-    refresh: Option<f32>,
+    refresh_mhz: Option<i32>,
     adaptive_sync: Option<AdaptiveSyncStateExt>,
     scale: Option<f64>,
     transform: Option<ShellTransform>,
@@ -106,9 +106,9 @@ impl MonitorConfig {
             table.insert("size", toml_edit::value(array));
         }
 
-        if let Some(refresh) = self.refresh {
+        if let Some(refresh) = self.refresh_mhz {
             // Convert Hz to millihertz for storage
-            table.insert("refresh", toml_edit::value((refresh * 1000.0) as i64));
+            table.insert("refresh", toml_edit::value(refresh as i64));
         }
 
         if let Some(adaptive_sync) = &self.adaptive_sync {
@@ -168,8 +168,8 @@ impl MonitorConfig {
 
         let refresh = table.get("refresh").and_then(|v| {
             // Convert millihertz to Hz
-            let millihertz = v.as_integer()? as f32;
-            Some(millihertz / 1000.0)
+            let millihertz = v.as_integer()? as i32;
+            Some(millihertz)
         });
 
         let adaptive_sync = table
@@ -206,7 +206,7 @@ impl MonitorConfig {
             serial_number,
             pos,
             size,
-            refresh,
+            refresh_mhz: refresh,
             adaptive_sync,
             scale,
             transform,
@@ -303,7 +303,7 @@ impl MonitorState {
                 if let Some(mode) = head.modes.get(mode_id) {
                     (
                         Some((mode.width as u32, mode.height as u32)),
-                        Some(mode.refresh as f32),
+                        Some(mode.refresh),
                     )
                 } else {
                     (None, None)
@@ -321,7 +321,7 @@ impl MonitorState {
                 },
                 pos: Some((head.position_x, head.position_y)),
                 size,
-                refresh,
+                refresh_mhz: refresh,
                 adaptive_sync: head.adaptive_sync.clone(),
                 scale: Some(head.scale),
                 transform: head.transform.map(convert_wl_transform_to_shell),
@@ -389,17 +389,20 @@ async fn apply_monitor_config(
     monitor: &MonitorConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = context.create_output_config();
-    config.enable_head(
-        &monitor.name,
-        Some(HeadConfiguration {
-            pos: monitor.pos,
-            size: monitor.size,
-            refresh: monitor.refresh,
-            adaptive_sync: monitor.adaptive_sync.clone(),
-            scale: monitor.scale,
-            transform: monitor.transform.map(convert_shell_transform_to_wl),
-        }),
-    )?;
+    let head_config = HeadConfiguration {
+        pos: monitor.pos,
+        size: monitor.size,
+        refresh: monitor.refresh_mhz.map(|r| r as f32 / 1000.0),
+        adaptive_sync: monitor.adaptive_sync.clone(),
+        scale: monitor.scale,
+        transform: monitor.transform.map(convert_shell_transform_to_wl),
+    };
+    log::trace!(
+        "Applying configuration for {}: {:?}",
+        monitor.name,
+        head_config
+    );
+    config.enable_head(&monitor.name, Some(head_config))?;
 
     config.apply();
 
@@ -493,13 +496,8 @@ async fn apply_monitor_config_once() -> Result<(), String> {
                 .await
                 .map_err(|e| format!("Failed to initialize: {}", e))?;
 
-            if let Err(e) = apply_monitor_config(
-                &mut context,
-                &mut event_queue,
-                &mut message_rx,
-                monitor,
-            )
-            .await
+            if let Err(e) =
+                apply_monitor_config(&mut context, &mut event_queue, &mut message_rx, monitor).await
             {
                 log::error!("Failed to configure {}: {}", monitor.name, e);
             } else {
@@ -590,7 +588,7 @@ async fn save_current_config() -> Result<(), String> {
         if let Some((w, h)) = monitor.size {
             log::trace!("    size: [{}x{}]", w, h);
         }
-        if let Some(refresh) = monitor.refresh {
+        if let Some(refresh) = monitor.refresh_mhz {
             log::trace!("    refresh: {:.2} Hz", refresh);
         }
         if let Some(scale) = monitor.scale {

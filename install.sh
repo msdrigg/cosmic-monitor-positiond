@@ -59,7 +59,8 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 # Run 'cosmic-monitor-positiond save' to save your current monitor configuration.
 #
 # Format:
-# [MonitorName]
+# [montiors]
+# [MonitorId]
 # serial_number = "string"              # Monitor serial number
 # pos = [x, y]                          # Position in pixels
 # size = [width, height]                # Resolution in pixels
@@ -70,6 +71,8 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 # primary = boolean                     # Set as primary display for X11 apps
 #
 # Example:
+# [monitors]
+#
 # [HDMI-1]
 # serial_number = "123123031"
 # pos = [0, 0]
@@ -82,9 +85,8 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 #
 # [DP-1]
 # pos = [2560, 0]
-# size = [1920, 1080]
-# refresh = 60000
-# scale = 1.0
+
+[monitors]
 
 EOF
     echo "Created default config file at ~/.config/cosmic-monitor-positiond/state.toml"
