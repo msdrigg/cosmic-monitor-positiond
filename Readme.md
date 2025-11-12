@@ -4,6 +4,8 @@ Does cosmic-de keep forgetting your saved monitor position? Do you constantly ha
 
 This repository will save your current monitor positioning and then re-create that positioning after your computer idles and wakes up.
 
+For a writeup on how this got created, check out [my blog](https://scottdriggers.com/blog/cosmic-de-wayland-monitor-positiond)
+
 ## Installation
 
 **Requirements**
@@ -27,3 +29,4 @@ If you want to change your monitor arangement, you can manually set your arangem
 
 1. Clone the repo again
 2. Run `./install.sh --uninstall`
+
