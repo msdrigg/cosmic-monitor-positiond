@@ -1,6 +1,6 @@
 ---
-slug: cosmic-de-wayland-monitor-solution
-title: Setting Up Post-Login and Post-Suspend Scripts in COSMIC Desktop Environment
+slug: cosmic-de-wayland-monitor-positiond
+title: Using
 authors: msdrigg
 tags:
     - linux
@@ -182,14 +182,13 @@ ExecStart=/usr/bin/pkill -x -usr2 thinkfan
 [Install]
 WantedBy=sleep.target
 
-
 ### AFTER_FIX_TEST_FORREAL
 
-- So sleep is aparently never triggered on my system because I guess I do not have suspend enabled (I have a desktop), I just have screen shutdown enabled
-- So I need to figure out how cosmic handles screen off notifications
-- Found cosmic-idle which does idle detection wakeup and found their wayland-protocls that they use to manage it
-- Built out my own version of cosmic idle that detects wakeup and idle and does the same thing in rust
-- Built simple user installer and set it up
-- Tested and https://github.com/msdrigg/cosmic-monitor-hack working
+-   So sleep is aparently never triggered on my system because I guess I do not have suspend enabled (I have a desktop), I just have screen shutdown enabled
+-   So I need to figure out how cosmic handles screen off notifications
+-   Found cosmic-idle which does idle detection wakeup and found their wayland-protocls that they use to manage it
+-   Built out my own version of cosmic idle that detects wakeup and idle and does the same thing in rust
+-   Built simple user installer and set it up
+-   Tested and https://github.com/msdrigg/cosmic-monitor-hack working
 
-- Added save + apply + monitor configuration and ready to go
+-   Added save + apply + monitor configuration and ready to go

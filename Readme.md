@@ -11,6 +11,7 @@ This repository will save your current monitor positioning and then re-create th
 - rust + cargo toolchain installed (to build the project)
 - libudev-dev installed (for building with support for auto-detecting monitors)
 
+**Build and Install**
 1. Clone the repo
 2. Run `./install.sh` (or `./install.sh --no-autodetect` to not support monitor autodetect)
 
@@ -22,7 +23,7 @@ This will build the project and install a user-level systemctl file that runs on
 
 - If you want to change your monitor arangement, you can manually set your arangement in system settings, and then run `~/.local/bin/cosmic-monitor-positiond save` to have cosmic-monitor-positiond save your changes
 
-**Uninsatlling**
+**Uninstalling**
 
 1. Clone the repo again
-2. Run `./install.sh --uninsatll`
+2. Run `./install.sh --uninstall`

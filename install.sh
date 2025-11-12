@@ -60,7 +60,7 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 #
 # Format:
 # [montiors]
-# [MonitorId]
+# [monitors.<MonitorId>]
 # serial_number = "string"              # Monitor serial number
 # pos = [x, y]                          # Position in pixels
 # size = [width, height]                # Resolution in pixels
@@ -73,7 +73,7 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 # Example:
 # [monitors]
 #
-# [HDMI-1]
+# [monitors.HDMI-1]
 # serial_number = "123123031"
 # pos = [0, 0]
 # size = [2560, 1440]
@@ -83,7 +83,7 @@ if [ ! -f ~/.config/cosmic-monitor-positiond/state.toml ]; then
 # transform = "normal"
 # primary = true
 #
-# [DP-1]
+# [monitors.DP-1]
 # pos = [2560, 0]
 
 [monitors]
